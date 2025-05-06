@@ -53,30 +53,30 @@ public final class CameraConfigurationUtils {
   }
 
   public static void setFocus(Camera.Parameters parameters,
-                              boolean autoFocus,
-                              boolean disableContinuous,
-                              boolean safeMode) {
+      boolean autoFocus,
+      boolean disableContinuous,
+      boolean safeMode) {
     List<String> supportedFocusModes = parameters.getSupportedFocusModes();
     String focusMode = null;
     if (autoFocus) {
       if (safeMode || disableContinuous) {
         focusMode = findSettableValue("focus mode",
-                                       supportedFocusModes,
-                                       Camera.Parameters.FOCUS_MODE_AUTO);
+            supportedFocusModes,
+            Camera.Parameters.FOCUS_MODE_AUTO);
       } else {
         focusMode = findSettableValue("focus mode",
-                                      supportedFocusModes,
-                                      Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE,
-                                      Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO,
-                                      Camera.Parameters.FOCUS_MODE_AUTO);
+            supportedFocusModes,
+            Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE,
+            Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO,
+            Camera.Parameters.FOCUS_MODE_AUTO);
       }
     }
     // Maybe selected auto-focus but not available, so fall through here:
     if (!safeMode && focusMode == null) {
       focusMode = findSettableValue("focus mode",
-                                    supportedFocusModes,
-                                    Camera.Parameters.FOCUS_MODE_MACRO,
-                                    Camera.Parameters.FOCUS_MODE_EDOF);
+          supportedFocusModes,
+          Camera.Parameters.FOCUS_MODE_MACRO,
+          Camera.Parameters.FOCUS_MODE_EDOF);
     }
     if (focusMode != null) {
       if (focusMode.equals(parameters.getFocusMode())) {
@@ -92,13 +92,13 @@ public final class CameraConfigurationUtils {
     String flashMode;
     if (on) {
       flashMode = findSettableValue("flash mode",
-                                    supportedFlashModes,
-                                    Camera.Parameters.FLASH_MODE_TORCH,
-                                    Camera.Parameters.FLASH_MODE_ON);
+          supportedFlashModes,
+          Camera.Parameters.FLASH_MODE_TORCH,
+          Camera.Parameters.FLASH_MODE_ON);
     } else {
       flashMode = findSettableValue("flash mode",
-                                    supportedFlashModes,
-                                    Camera.Parameters.FLASH_MODE_OFF);
+          supportedFlashModes,
+          Camera.Parameters.FLASH_MODE_OFF);
     }
     if (flashMode != null) {
       if (flashMode.equals(parameters.getFlashMode())) {
@@ -159,7 +159,7 @@ public final class CameraConfigurationUtils {
         } else {
           Log.i(TAG, "Setting FPS range to " + Arrays.toString(suitableFPSRange));
           parameters.setPreviewFpsRange(suitableFPSRange[Camera.Parameters.PREVIEW_FPS_MIN_INDEX],
-                                        suitableFPSRange[Camera.Parameters.PREVIEW_FPS_MAX_INDEX]);
+              suitableFPSRange[Camera.Parameters.PREVIEW_FPS_MAX_INDEX]);
         }
       }
     }
@@ -211,8 +211,8 @@ public final class CameraConfigurationUtils {
       return;
     }
     String sceneMode = findSettableValue("scene mode",
-                                         parameters.getSupportedSceneModes(),
-                                         Camera.Parameters.SCENE_MODE_BARCODE);
+        parameters.getSupportedSceneModes(),
+        Camera.Parameters.SCENE_MODE_BARCODE);
     if (sceneMode != null) {
       parameters.setSceneMode(sceneMode);
     }
@@ -263,78 +263,146 @@ public final class CameraConfigurationUtils {
       return;
     }
     String colorMode = findSettableValue("color effect",
-                                         parameters.getSupportedColorEffects(),
-                                         Camera.Parameters.EFFECT_NEGATIVE);
+        parameters.getSupportedColorEffects(),
+        Camera.Parameters.EFFECT_NEGATIVE);
     if (colorMode != null) {
       parameters.setColorEffect(colorMode);
     }
   }
 
   public static Point findBestPreviewSizeValue(Camera.Parameters parameters, Point screenResolution) {
-
     List<Camera.Size> rawSupportedSizes = parameters.getSupportedPreviewSizes();
+
     if (rawSupportedSizes == null) {
-      Log.w(TAG, "Device returned no supported preview sizes; using default");
-      Camera.Size defaultSize = parameters.getPreviewSize();
-      if (defaultSize == null) {
-        throw new IllegalStateException("Parameters contained no preview size!");
-      }
-      return new Point(defaultSize.width, defaultSize.height);
+      return handleNoSupportedSizes(parameters);
     }
 
-    if (Log.isLoggable(TAG, Log.INFO)) {
-      StringBuilder previewSizesString = new StringBuilder();
-      for (Camera.Size size : rawSupportedSizes) {
-        previewSizesString.append(size.width).append('x').append(size.height).append(' ');
-      }
-      Log.i(TAG, "Supported preview sizes: " + previewSizesString);
-    }
+    logSupportedSizes(rawSupportedSizes);
 
     double screenAspectRatio = screenResolution.x / (double) screenResolution.y;
+    SizeEvaluationResult evaluationResult = evaluateSizes(rawSupportedSizes, screenResolution, screenAspectRatio);
 
-    // Find a suitable size, with max resolution
-    int maxResolution = 0;
-    Camera.Size maxResPreviewSize = null;
-    for (Camera.Size size : rawSupportedSizes) {
-      int realWidth = size.width;
-      int realHeight = size.height;
-      int resolution = realWidth * realHeight;
-      if (resolution < MIN_PREVIEW_PIXELS) {
+    return getBestSize(evaluationResult, parameters);
+  }
+
+  // Métodos auxiliares para descomponer la lógica
+  private static Point handleNoSupportedSizes(Camera.Parameters parameters) {
+    Log.w(TAG, "Device returned no supported preview sizes; using default");
+    Camera.Size defaultSize = parameters.getPreviewSize();
+    validateDefaultSize(defaultSize);
+    return new Point(defaultSize.width, defaultSize.height);
+  }
+
+  private static void validateDefaultSize(Camera.Size defaultSize) {
+    if (defaultSize == null) {
+      throw new IllegalStateException("Parameters contained no preview size!");
+    }
+  }
+
+  private static void logSupportedSizes(List<Camera.Size> sizes) {
+    if (Log.isLoggable(TAG, Log.INFO)) {
+      String sizesString = sizes.stream()
+          .map(size -> size.width + "x" + size.height)
+          .collect(Collectors.joining(" "));
+      Log.i(TAG, "Supported preview sizes: " + sizesString);
+    }
+  }
+
+  private static SizeEvaluationResult evaluateSizes(List<Camera.Size> sizes, Point screenRes, double screenAspect) {
+    SizeEvaluationResult result = new SizeEvaluationResult();
+
+    for (Camera.Size size : sizes) {
+      SizeEvaluation eval = evaluateSingleSize(size, screenRes, screenAspect);
+      if (eval == null)
         continue;
+
+      if (eval.exactMatch) {
+        result.exactMatchSize = new Point(size.width, size.height);
+        return result;
       }
 
-      boolean isCandidatePortrait = realWidth < realHeight;
-      int maybeFlippedWidth = isCandidatePortrait ? realHeight : realWidth;
-      int maybeFlippedHeight = isCandidatePortrait ? realWidth : realHeight;
-      double aspectRatio = maybeFlippedWidth / (double) maybeFlippedHeight;
-      double distortion = Math.abs(aspectRatio - screenAspectRatio);
-      if (distortion > MAX_ASPECT_DISTORTION) {
-        continue;
-      }
-
-      if (maybeFlippedWidth == screenResolution.x && maybeFlippedHeight == screenResolution.y) {
-        Point exactPoint = new Point(realWidth, realHeight);
-        Log.i(TAG, "Found preview size exactly matching screen size: " + exactPoint);
-        return exactPoint;
-      }
-
-      // Resolution is suitable; record the one with max resolution
-      if (resolution > maxResolution) {
-        maxResolution = resolution;
-        maxResPreviewSize = size;
+      if (eval.resolution > result.maxResolution) {
+        result.maxResolution = eval.resolution;
+        result.maxResPreviewSize = size;
       }
     }
+    return result;
+  }
 
-    // If no exact match, use largest preview size. This was not a great idea on older devices because
-    // of the additional computation needed. We're likely to get here on newer Android 4+ devices, where
-    // the CPU is much more powerful.
-    if (maxResPreviewSize != null) {
-      Point largestSize = new Point(maxResPreviewSize.width, maxResPreviewSize.height);
-      Log.i(TAG, "Using largest suitable preview size: " + largestSize);
-      return largestSize;
+  private static SizeEvaluation evaluateSingleSize(Camera.Size size, Point screenRes, double screenAspect) {
+    int realWidth = size.width;
+    int realHeight = size.height;
+    int resolution = realWidth * realHeight;
+
+    if (!isResolutionSufficient(resolution))
+      return null;
+
+    boolean isPortrait = realWidth < realHeight;
+    int flippedWidth = isPortrait ? realHeight : realWidth;
+    int flippedHeight = isPortrait ? realWidth : realHeight;
+
+    if (!isAspectRatioWithinTolerance(flippedWidth, flippedHeight, screenAspect))
+      return null;
+
+    if (isExactMatch(flippedWidth, flippedHeight, screenRes)) {
+      LogExactMatch(size);
+      return new SizeEvaluation(true, resolution);
     }
 
-    // If there is nothing at all suitable, return current preview size
+    return new SizeEvaluation(false, resolution);
+  }
+
+  // Métodos de validación simples
+  private static boolean isResolutionSufficient(int resolution) {
+    return resolution >= MIN_PREVIEW_PIXELS;
+  }
+
+  private static boolean isAspectRatioWithinTolerance(int width, int height, double screenAspect) {
+    double aspectRatio = width / (double) height;
+    return Math.abs(aspectRatio - screenAspect) <= MAX_ASPECT_DISTORTION;
+  }
+
+  private static boolean isExactMatch(int width, int height, Point screenRes) {
+    return width == screenRes.x && height == screenRes.y;
+  }
+
+  private static void LogExactMatch(Camera.Size size) {
+    Log.i(TAG, "Found preview size exactly matching screen size: " +
+        size.width + "x" + size.height);
+  }
+
+  // Clases de apoyo para mantener el estado
+  private static class SizeEvaluationResult {
+    Point exactMatchSize;
+    int maxResolution;
+    Camera.Size maxResPreviewSize;
+  }
+
+  private static class SizeEvaluation {
+    boolean exactMatch;
+    int resolution;
+
+    SizeEvaluation(boolean exact, int res) {
+      exactMatch = exact;
+      resolution = res;
+    }
+  }
+
+  private static Point getBestSize(SizeEvaluationResult result, Camera.Parameters parameters) {
+    if (result.exactMatchSize != null) {
+      return result.exactMatchSize;
+    }
+
+    if (result.maxResPreviewSize != null) {
+      Point largest = new Point(result.maxResPreviewSize.width, result.maxResPreviewSize.height);
+      Log.i(TAG, "Using largest suitable preview size: " + largest);
+      return largest;
+    }
+
+    return getFallbackSize(parameters);
+  }
+
+  private static Point getFallbackSize(Camera.Parameters parameters) {
     Camera.Size defaultPreview = parameters.getPreviewSize();
     if (defaultPreview == null) {
       throw new IllegalStateException("Parameters contained no preview size!");
@@ -345,8 +413,8 @@ public final class CameraConfigurationUtils {
   }
 
   private static String findSettableValue(String name,
-                                          Collection<String> supportedValues,
-                                          String... desiredValues) {
+      Collection<String> supportedValues,
+      String... desiredValues) {
     Log.i(TAG, "Requesting " + name + " value from among: " + Arrays.toString(desiredValues));
     Log.i(TAG, "Supported " + name + " values: " + supportedValues);
     if (supportedValues != null) {
